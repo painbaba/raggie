@@ -9,6 +9,12 @@ called out under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+### Added
+
+- Mock LLM: `MOCKLLM_LANGUAGE=en|tr` picks the answer template language
+  (default `en`). Only the template prose switches; citations keep their
+  `[n]` labels either way.
+
 ## [0.1.0] - 2026-11-07
 
 First public release: **Community Preview**.

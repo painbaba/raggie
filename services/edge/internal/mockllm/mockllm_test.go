@@ -70,6 +70,106 @@ func TestAnswerWithoutContextSaysSo(t *testing.T) {
 	}
 }
 
+// MOCKLLM_LANGUAGE=tr switches the template prose to Turkish while citations
+// keep their [n] labels and the first-two-sources rule.
+func TestAnswerTurkishTemplate(t *testing.T) {
+	got := answerText(ragMessages("İzin kaç gün?"), "tr")
+	for _, want := range []string{"[1]", "[2]", "leave-policy.pdf", "handbook.docx", "İzin kaç gün?", "örnek yanıtı"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("Turkish answer missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "mock answer") || strings.Contains(got, "[3]") {
+		t.Fatalf("Turkish answer must not use the English template or cite [3]:\n%s", got)
+	}
+	if answerText(ragMessages("İzin kaç gün?"), "tr") != got {
+		t.Fatal("Turkish answer must be deterministic")
+	}
+}
+
+func TestAnswerTurkishWithoutContextSaysSo(t *testing.T) {
+	got := answerText([]map[string]any{{"role": "user", "content": "merhaba"}}, "tr")
+	if strings.Contains(got, "[1]") || !strings.Contains(got, "kaynak bulunamadı") {
+		t.Fatalf("Turkish no-context answer should not cite: %s", got)
+	}
+}
+
+// Tool-result summaries switch language too; the quoted output does not.
+func TestAnswerTurkishToolResult(t *testing.T) {
+	msgs := []map[string]any{
+		{"role": "user", "content": "jira'da açık işler"},
+		{"role": "assistant", "content": nil, "tool_calls": []map[string]any{{
+			"id": "c1", "type": "function", "function": map[string]any{"name": "jira_search", "arguments": "{}"},
+		}}},
+		{"role": "tool", "tool_call_id": "c1", "content": "ISSUE-1: Fix login"},
+	}
+	got := answerText(msgs, "tr")
+	if !strings.Contains(got, "Araç sonucu") || !strings.Contains(got, "ISSUE-1: Fix login") || strings.Contains(got, "Tool result") {
+		t.Fatalf("Turkish tool-result summary wrong: %s", got)
+	}
+}
+
+// Only the template prose changes: the shape-correct helper replies the edge
+// parses stay byte-identical in Turkish mode.
+func TestTurkishKeepsHelperPromptReplies(t *testing.T) {
+	none := answerText([]map[string]any{
+		{"role": "system", "content": "... Çıkarılacak kalıcı bilgi yoksa yalnızca NONE yaz."},
+		{"role": "user", "content": "KULLANICI: selam"},
+	}, "tr")
+	if none != "NONE" {
+		t.Fatalf("memory extraction must still answer NONE, got %q", none)
+	}
+	sched := answerText([]map[string]any{
+		{"role": "system", "content": `YALNIZCA geçerli bir JSON nesnesi döndür: {"cron":"...","prompt":"...","name":"...","summary":"..."}`},
+		{"role": "user", "content": "her sabah rapor"},
+	}, "tr")
+	var parsed map[string]string
+	if err := json.Unmarshal([]byte(sched), &parsed); err != nil || len(strings.Fields(parsed["cron"])) != 5 {
+		t.Fatalf("schedule parse reply must stay JSON with a 5-field cron, got %q (%v)", sched, err)
+	}
+}
+
+func TestLoadConfigLanguage(t *testing.T) {
+	t.Setenv("MOCKLLM_LANGUAGE", "")
+	if cfg := LoadConfig(); cfg.Language != "en" {
+		t.Fatalf("unset language must default to en, got %q", cfg.Language)
+	}
+	for in, want := range map[string]string{"tr": "tr", "TR": "tr", " tr ": "tr", "fr": "en", "english": "en"} {
+		t.Setenv("MOCKLLM_LANGUAGE", in)
+		if cfg := LoadConfig(); cfg.Language != want {
+			t.Fatalf("MOCKLLM_LANGUAGE=%q → %q, want %q", in, cfg.Language, want)
+		}
+	}
+}
+
+// The env knob reaches the served answers: a Turkish-configured server answers
+// in Turkish; an unset or unknown language falls back to English.
+func TestServerAnswersInConfiguredLanguage(t *testing.T) {
+	for lang, want := range map[string]string{"tr": "örnek yanıtı", "fr": "mock answer", "": "mock answer"} {
+		srv := newTestServer(t, Config{Language: lang})
+		resp, err := http.Post(srv.URL+"/v1/chat/completions", "application/json",
+			strings.NewReader(chatBody(t, false, ragMessages("Leave?"), nil)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var body struct {
+			Choices []struct {
+				Message struct {
+					Content string `json:"content"`
+				} `json:"message"`
+			} `json:"choices"`
+		}
+		err = json.NewDecoder(resp.Body).Decode(&body)
+		_ = resp.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(body.Choices) != 1 || !strings.Contains(body.Choices[0].Message.Content, want) {
+			t.Fatalf("lang %q: expected %q in the answer, got %+v", lang, want, body.Choices)
+		}
+	}
+}
+
 // One-shot helper prompts used by the edge get shape-correct replies so an
 // offline demo does not pollute memory or fail JSON parsing.
 // Older edge builds labeled passages in Turkish; the mock still cites them.

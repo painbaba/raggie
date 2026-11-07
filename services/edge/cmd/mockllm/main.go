@@ -47,7 +47,8 @@ func main() {
 	}
 	go func() {
 		logger.Info("mockllm listening", "addr", cfg.Addr, "models", cfg.Models,
-			"token_delay_ms", cfg.TokenDelay.Milliseconds(), "tool_calls", cfg.ToolCalls, "reasoning", cfg.Reasoning)
+			"token_delay_ms", cfg.TokenDelay.Milliseconds(), "tool_calls", cfg.ToolCalls, "reasoning", cfg.Reasoning,
+			"language", cfg.Language)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("server error", "err", err)
 			os.Exit(1)

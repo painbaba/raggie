@@ -26,6 +26,7 @@ type Config struct {
 	ToolCalls  bool          // answer with a tool call when tools are offered (MOCKLLM_TOOL_CALLS)
 	Reasoning  bool          // stream a short reasoning delta first (MOCKLLM_REASONING)
 	APIKey     string        // when set, require "Authorization: Bearer <key>" (MOCKLLM_API_KEY)
+	Language   string        // answer template language, "en" or "tr" (MOCKLLM_LANGUAGE)
 }
 
 // DefaultModels covers the edge's default chat model so readiness passes.
@@ -38,6 +39,7 @@ func LoadConfig() Config {
 		ToolCalls: envBool("MOCKLLM_TOOL_CALLS"),
 		Reasoning: envBool("MOCKLLM_REASONING"),
 		APIKey:    os.Getenv("MOCKLLM_API_KEY"),
+		Language:  envLanguage("MOCKLLM_LANGUAGE"),
 	}
 	if ms, err := strconv.Atoi(os.Getenv("MOCKLLM_TOKEN_DELAY_MS")); err == nil && ms > 0 {
 		cfg.TokenDelay = time.Duration(ms) * time.Millisecond
@@ -65,6 +67,19 @@ func envBool(key string) bool {
 	return b
 }
 
+// envLanguage reads an answer-template language knob. Only "en" and "tr" are
+// supported (case-insensitive); anything else, including empty, means English.
+func envLanguage(key string) string {
+	return normalizeLanguage(os.Getenv(key))
+}
+
+func normalizeLanguage(v string) string {
+	if strings.EqualFold(strings.TrimSpace(v), "tr") {
+		return "tr"
+	}
+	return "en"
+}
+
 // Server serves the OpenAI-compatible endpoints.
 type Server struct {
 	cfg Config
@@ -74,6 +89,7 @@ func New(cfg Config) *Server {
 	if len(cfg.Models) == 0 {
 		cfg.Models = DefaultModels
 	}
+	cfg.Language = normalizeLanguage(cfg.Language)
 	return &Server{cfg: cfg}
 }
 
@@ -153,7 +169,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	}
 	answer := ""
 	if call == nil {
-		answer = Answer(req.Messages)
+		answer = answerText(req.Messages, s.cfg.Language)
 	}
 	tokens := tokenize(answer)
 	id := "chatcmpl-mock"
@@ -259,16 +275,53 @@ func tokenize(s string) []string {
 var sourcePattern = regexp.MustCompile(
 	`(?m)^\[(\d+)\] \((?:source|kaynak): (.*?)(?:, (?:relevance|alaka):|, (?:type|tür):| - | — |\))`)
 
-const mockPreamble = "This is a Raggie mock answer (offline test model)."
+// answerTemplates holds the user-visible template prose per answer language
+// (MOCKLLM_LANGUAGE=en|tr). Only this prose switches: citation labels stay
+// "[n]" in every language, and the shape-correct helper replies the edge
+// parses ("NONE", the schedule JSON) stay byte-identical so offline runs keep
+// working regardless of the language.
+var answerTemplates = map[string]struct {
+	preamble   string
+	toolResult string
+	question   string
+	noSource   string
+	source     string
+	moreDetail string
+}{
+	"en": {
+		preamble:   "This is a Raggie mock answer (offline test model).",
+		toolResult: " Tool result: ",
+		question:   " Your question: “%s”.",
+		noSource:   " The provided context contains no matching source for this question.",
+		source:     " The relevant information is in %s [%s].",
+		moreDetail: " For more detail, see %s [%s].",
+	},
+	"tr": {
+		preamble:   "Bu bir Raggie örnek yanıtıdır (çevrimdışı test modeli).",
+		toolResult: " Araç sonucu: ",
+		question:   " Sorunuz: “%s”.",
+		noSource:   " Verilen bağlamda bu soruyla eşleşen bir kaynak bulunamadı.",
+		source:     " İlgili bilgi %s [%s] içinde yer alıyor.",
+		moreDetail: " Ayrıntı için bkz. %s [%s].",
+	},
+}
 
-// Answer returns the deterministic reply for a conversation:
+// Answer returns the deterministic reply for a conversation in English, the
+// default template language:
 //   - after a tool result: a summary quoting the tool output;
 //   - for the edge's helper prompts (memory extraction, schedule parse): a
 //     shape-correct reply so offline runs neither store junk memory nor fail;
 //   - otherwise a templated answer citing up to two provided sources.
 func Answer(messages []map[string]any) string {
+	return answerText(messages, "en")
+}
+
+// answerText is Answer with the template language chosen by
+// MOCKLLM_LANGUAGE ("en" or "tr"; anything else falls back to English).
+func answerText(messages []map[string]any, lang string) string {
+	tpl := answerTemplates[normalizeLanguage(lang)]
 	if res, ok := lastToolResult(messages); ok {
-		return mockPreamble + " Tool result: " + clip(res, 300)
+		return tpl.preamble + tpl.toolResult + clip(res, 300)
 	}
 	system := ""
 	for _, m := range messages {
@@ -289,15 +342,15 @@ func Answer(messages []map[string]any) string {
 
 	sources := citedSources(messages, 2)
 	var b strings.Builder
-	b.WriteString(mockPreamble)
-	fmt.Fprintf(&b, " Your question: “%s”.", question)
+	b.WriteString(tpl.preamble)
+	fmt.Fprintf(&b, tpl.question, question)
 	if len(sources) == 0 {
-		b.WriteString(" The provided context contains no matching source for this question.")
+		b.WriteString(tpl.noSource)
 		return b.String()
 	}
-	fmt.Fprintf(&b, " The relevant information is in %s [%s].", sources[0].name, sources[0].n)
+	fmt.Fprintf(&b, tpl.source, sources[0].name, sources[0].n)
 	if len(sources) > 1 {
-		fmt.Fprintf(&b, " For more detail, see %s [%s].", sources[1].name, sources[1].n)
+		fmt.Fprintf(&b, tpl.moreDetail, sources[1].name, sources[1].n)
 	}
 	return b.String()
 }

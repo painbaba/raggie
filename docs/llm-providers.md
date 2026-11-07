@@ -47,7 +47,9 @@ whatever `.env` says. To use the mock with plain compose instead, start the
 key is ignored unless `MOCKLLM_API_KEY` is set).
 Knobs: `MOCKLLM_MODELS` (advertised model ids, default
 `gpt-oss-120b,raggie-mock`), `MOCKLLM_TOKEN_DELAY_MS` (streaming pace),
-`MOCKLLM_TOOL_CALLS`, `MOCKLLM_REASONING`, `MOCKLLM_API_KEY` (require a key).
+`MOCKLLM_TOOL_CALLS`, `MOCKLLM_REASONING`, `MOCKLLM_API_KEY` (require a key),
+`MOCKLLM_LANGUAGE` (answer template language, `en` or `tr`, default `en`; only
+the template prose switches — citations keep their `[n]` labels either way).
 The mock is for testing the pipeline; its answers are templated, not generated.
 
 ## Ollama
